@@ -2944,8 +2944,412 @@ rAdminSettings = function(t) {
   }
 };
 
+/* ══════════════════════════════════════════════════════
+   DYNAMIC METRIC CALCULATIONS & CURRENCY PARSER
+   ══════════════════════════════════════════════════════ */
+
+function parseLeadValue(val) {
+  if (!val || typeof val !== 'string') return 0;
+  let clean = val.replace(/[₹\s,]/g, '').trim();
+  if (!clean || clean === '—') return 0;
+
+  let multiplier = 1;
+  if (clean.toLowerCase().includes('l')) {
+    multiplier = 100000;
+    clean = clean.replace(/[lL]/g, '');
+  } else if (clean.toLowerCase().includes('k')) {
+    multiplier = 1000;
+    clean = clean.replace(/[kK]/g, '');
+  }
+
+  clean = clean.replace(/\+/g, '');
+
+  if (clean.includes('-') || clean.includes('–')) {
+    const parts = clean.split(/[-–]/);
+    const p1 = parseFloat(parts[0]);
+    const p2 = parseFloat(parts[1]);
+    if (!isNaN(p1) && !isNaN(p2)) {
+      return ((p1 + p2) / 2) * multiplier;
+    } else if (!isNaN(p1)) {
+      return p1 * multiplier;
+    }
+    return 0;
+  }
+
+  const num = parseFloat(clean);
+  return isNaN(num) ? 0 : num * multiplier;
+}
+
+function updateDashCount() {
+  const totalLeads = LEADS.length;
+  const hotLeads = LEADS.filter(l => l.cat === 'hot').length;
+  const needAttention = LEADS.filter(l => l.cat === 'hot' && (l.stage === 'New' || l.stage === 'Contacted')).length;
+
+  const totalAIActs = AI_ACTS.length;
+  const completedAIActs = AI_ACTS.filter(a => a.st === 'done').length;
+  const aiHandledPct = totalAIActs > 0 ? Math.round((completedAIActs / totalAIActs) * 100) : 94;
+  const pendingApproval = AI_ACTS.filter(a => a.st === 'pending').length;
+
+  let pipelineVal = 0;
+  LEADS.forEach(l => {
+    if (l.stage !== 'Lost') {
+      pipelineVal += parseLeadValue(l.val || l.budget);
+    }
+  });
+
+  let formattedPipeline = "₹0";
+  if (pipelineVal >= 100000) {
+    formattedPipeline = "₹" + (pipelineVal / 100000).toFixed(1).replace(/\.0$/, '') + "L";
+  } else if (pipelineVal >= 1000) {
+    formattedPipeline = "₹" + (pipelineVal / 1000).toFixed(1).replace(/\.0$/, '') + "K";
+  } else {
+    formattedPipeline = "₹" + pipelineVal;
+  }
+
+  const valTotal = document.querySelector('#s-dashboard .sc-t .s-val');
+  if (valTotal) valTotal.textContent = totalLeads.toLocaleString();
+  
+  const valHot = document.querySelector('#s-dashboard .sc-o .s-val');
+  if (valHot) valHot.textContent = hotLeads;
+  const lblHot = document.querySelector('#s-dashboard .sc-o .s-d');
+  if (lblHot) {
+    lblHot.className = needAttention > 0 ? 's-d dn' : 's-d du';
+    lblHot.innerHTML = needAttention > 0 ? `▲ ${needAttention} need attention` : `✓ All caught up`;
+  }
+
+  const valAI = document.querySelector('#s-dashboard .sc-v .s-val');
+  if (valAI) valAI.textContent = aiHandledPct + "%";
+  const lblAI = document.querySelector('#s-dashboard .sc-v .s-d');
+  if (lblAI) {
+    lblAI.className = pendingApproval > 0 ? 's-d dn' : 's-d du';
+    lblAI.innerHTML = pendingApproval > 0 ? `${pendingApproval} pending approval` : `✓ All actions done`;
+  }
+
+  const valPipe = document.querySelector('#s-dashboard .sc-y .s-val');
+  if (valPipe) valPipe.textContent = formattedPipeline;
+
+  // Live Lead Inbox total counts sync
+  const llsHeader = document.querySelector('#s-dashboard .card .ch span.nba.nba-o');
+  if (llsHeader) {
+    llsHeader.textContent = pendingApproval;
+    llsHeader.style.display = pendingApproval > 0 ? 'inline-block' : 'none';
+  }
+
+  // Sidebar dynamic navigation badges
+  const sidebarLeadsBadge = document.querySelector('#sb-nav button[onclick*="\'leads\'"] span.nba.nba-t');
+  if (sidebarLeadsBadge) {
+    sidebarLeadsBadge.textContent = totalLeads;
+  }
+  
+  const sidebarAIBadge = document.querySelector('#sb-nav button[onclick*="\'ai-actions\'"] span.nba.nba-o');
+  if (sidebarAIBadge) {
+    sidebarAIBadge.textContent = pendingApproval;
+    sidebarAIBadge.style.display = pendingApproval > 0 ? 'inline-block' : 'none';
+  }
+
+  // Admin counts
+  const sidebarTenantsBadge = document.querySelector('#sb-nav button[onclick*="\'admin-tenants\'"] span.nba.nba-v');
+  if (sidebarTenantsBadge) {
+    sidebarTenantsBadge.textContent = TENANTS.length;
+  }
+  const sidebarUsersBadge = document.querySelector('#sb-nav button[onclick*="\'admin-users\'"] span.nba.nba-t');
+  if (sidebarUsersBadge) {
+    sidebarUsersBadge.textContent = ADMIN_USERS.length;
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// RESPONSIVE MOBILE SIDEBAR COLLAPSE ENGINE
+// ══════════════════════════════════════════════════════
+
+function initResponsiveUI() {
+  // Inject the comprehensive media queries
+  const styleEl = document.createElement('style');
+  styleEl.id = 'responsive-overrides-style';
+  styleEl.innerHTML = `
+    #topbar-menu-btn {
+      display: none !important;
+    }
+    
+    /* Sleek Neutral AI Card Overrides - Removing Green Highlight */
+    .ai-box {
+      background: linear-gradient(135deg, rgba(77,158,255,.05), rgba(182,124,255,.03)) !important;
+      border: 1px solid rgba(77,158,255,.15) !important;
+    }
+    .ai-lbl {
+      color: var(--c3) !important;
+    }
+
+    @media (max-width: 768px) {
+      #app {
+        position: relative;
+        width: 100%;
+        height: 100vh;
+      }
+      
+      #sidebar {
+        position: fixed !important;
+        top: 0 !important;
+        bottom: 0 !important;
+        left: -240px !important;
+        width: 240px !important;
+        height: 100% !important;
+        z-index: 1000 !important;
+        transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        box-shadow: 0 0 30px rgba(0,0,0,0.7) !important;
+      }
+      
+      #sidebar.open {
+        left: 0 !important;
+      }
+      
+      /* Blur backdrop overlay */
+      #sidebar-overlay {
+        position: fixed !important;
+        inset: 0 !important;
+        background: rgba(0, 0, 0, 0.5) !important;
+        backdrop-filter: blur(8px) !important;
+        -webkit-backdrop-filter: blur(8px) !important;
+        z-index: 999 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        transition: opacity 0.3s ease !important;
+      }
+      
+      #sidebar-overlay.open {
+        opacity: 1 !important;
+        pointer-events: auto !important;
+      }
+
+      /* Hamburger menu button */
+      #topbar-menu-btn {
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-size: 20px !important;
+        background: var(--bg3) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: var(--r8) !important;
+        width: 36px !important;
+        height: 36px !important;
+        color: var(--text) !important;
+        cursor: pointer !important;
+        flex-shrink: 0 !important;
+        transition: var(--anim) !important;
+      }
+      
+      #topbar-menu-btn:hover {
+        border-color: var(--border2) !important;
+        color: var(--text) !important;
+      }
+      
+      #mwrap {
+        width: 100% !important;
+        min-width: 0 !important;
+      }
+      
+      #content {
+        padding: 16px !important;
+      }
+
+      /* Grid elements stacking rules */
+      .srow.s4 {
+        grid-template-columns: repeat(2, 1fr) !important;
+      }
+      @media (max-width: 480px) {
+        .srow.s4 {
+          grid-template-columns: 1fr !important;
+        }
+      }
+
+      .srow.s3, .tc3, .cgrid, .pgrid {
+        grid-template-columns: 1fr !important;
+      }
+      
+      .srow.s2, .fg2, .tc, .dg, .swrap {
+        grid-template-columns: 1fr !important;
+      }
+
+      #s-whatsapp .tc {
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      #s-whatsapp .card {
+        margin-bottom: 12px;
+      }
+      
+      .ps-cards {
+        grid-template-columns: 1fr !important;
+        max-width: 320px !important;
+        padding: 0 10px !important;
+      }
+      #portal-select {
+        padding: 20px !important;
+        overflow-y: auto !important;
+        gap: 20px !important;
+      }
+      .ps-logo {
+        font-size: 32px !important;
+      }
+
+      .tbl {
+        display: block !important;
+        width: 100% !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+      }
+
+      .modal {
+        min-width: 90vw !important;
+        max-width: 95vw !important;
+        padding: 16px !important;
+      }
+
+      .cgrid {
+        grid-template-columns: repeat(2, 1fr) !important;
+      }
+      @media (max-width: 480px) {
+        .cgrid {
+          grid-template-columns: 1fr !important;
+        }
+      }
+      
+      .pgrid {
+        grid-template-columns: 1fr !important;
+        padding: 0 10px !important;
+      }
+      
+      .swrap {
+        grid-template-columns: 1fr !important;
+      }
+      .snav {
+        flex-direction: row !important;
+        overflow-x: auto !important;
+        padding-bottom: 8px !important;
+        white-space: nowrap !important;
+        gap: 8px !important;
+      }
+      .snb {
+        display: inline-flex !important;
+        width: auto !important;
+      }
+
+      #mp-content > div {
+        grid-template-columns: 1fr !important;
+      }
+      
+      #s-leads .tc {
+        grid-template-columns: 1fr !important;
+      }
+      #lead-qp {
+        margin-top: 16px !important;
+      }
+
+      .pb {
+        gap: 8px !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding-bottom: 10px !important;
+      }
+      .pc {
+        min-width: 260px !important;
+        max-width: 260px !important;
+      }
+    }
+  `;
+  document.head.appendChild(styleEl);
+
+  const appEl = document.getElementById('app');
+  if (appEl) {
+    const overlay = document.createElement('div');
+    overlay.id = 'sidebar-overlay';
+    overlay.onclick = toggleSidebar;
+    appEl.appendChild(overlay);
+  }
+
+  const topbar = document.getElementById('topbar');
+  const ptitle = document.getElementById('ptitle');
+  if (topbar && ptitle) {
+    const menuBtn = document.createElement('button');
+    menuBtn.id = 'topbar-menu-btn';
+    menuBtn.innerHTML = '☰';
+    menuBtn.onclick = toggleSidebar;
+    topbar.insertBefore(menuBtn, ptitle);
+  }
+}
+
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+  if (sb && overlay) {
+    sb.classList.toggle('open');
+    overlay.classList.toggle('open');
+  }
+}
+
+function closeSidebar() {
+  const sb = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+  if (sb && overlay) {
+    sb.classList.remove('open');
+    overlay.classList.remove('open');
+  }
+}
+
+// Hook navigation transitions to close sidebar drawer on mobile and trigger live updates
+const _origGo = go;
+go = function(key, el) {
+  _origGo(key, el);
+  updateDashCount();
+  closeSidebar();
+};
+
+// ══════════════════════════════════════════════════════
+// REAL-TIME APPROVE & REJECT ACTIONS OVERRIDES
+// ══════════════════════════════════════════════════════
+
+appr = function(id) {
+  const a = AI_ACTS.find(x => x.id === id);
+  if (a) {
+    a.st = 'done';
+    saveState();
+    updateDashCount();
+    
+    if (document.getElementById('s-ai-actions')?.classList.contains('on')) {
+      rAIActs();
+    }
+    if (document.getElementById('s-dashboard')?.classList.contains('on')) {
+      rDash();
+    }
+    toast(`✓ ${a.type} approved and sent to ${a.nm}`);
+  }
+};
+
+rejAct = function(id) {
+  const a = AI_ACTS.find(x => x.id === id);
+  if (a) {
+    a.st = 'done';
+    saveState();
+    updateDashCount();
+    
+    if (document.getElementById('s-ai-actions')?.classList.contains('on')) {
+      rAIActs();
+    }
+    if (document.getElementById('s-dashboard')?.classList.contains('on')) {
+      rDash();
+    }
+    toast(`✕ Rejected: ${a.type} for ${a.nm}`);
+  }
+};
+
+// ══════════════════════════════════════════════════════
 // 8. BOOT SEQUENCE — LOGIN -> FIREBASE -> APP
+// ══════════════════════════════════════════════════════
+
 (async function boot() {
+  // Initialize dynamic responsiveness UI and styles
+  initResponsiveUI();
+
   // Load State from LocalStorage
   loadState();
 
